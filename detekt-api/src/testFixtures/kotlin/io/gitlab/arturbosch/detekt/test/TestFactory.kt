@@ -15,11 +15,10 @@ import kotlin.io.path.Path
 fun createFinding(
     ruleName: String = "TestSmell",
     fileName: String = "TestFile.kt",
-    entity: Entity = createEntity(location = createLocation(fileName)),
     severity: Severity = Severity.Error
 ) = createFinding(
     ruleName = ruleName,
-    entity = entity,
+    entity = createEntity(location = createLocation(fileName)),
     message = "TestMessage",
     severity = severity,
 )
