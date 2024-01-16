@@ -15,6 +15,7 @@ interface Finding2 : HasEntity {
 
     interface RuleInfo {
         val id: Rule.Id
+        val ruleSetId: RuleSet.Id
         val description: String
     }
 }
