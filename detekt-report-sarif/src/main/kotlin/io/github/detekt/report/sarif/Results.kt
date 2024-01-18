@@ -8,14 +8,11 @@ import io.github.detekt.sarif4k.Region
 import io.gitlab.arturbosch.detekt.api.Detektion
 import io.gitlab.arturbosch.detekt.api.Finding2
 import io.gitlab.arturbosch.detekt.api.Location
-import io.gitlab.arturbosch.detekt.api.RuleSet
 import io.gitlab.arturbosch.detekt.api.Severity
 import kotlin.io.path.invariantSeparatorsPathString
 
 internal fun toResults(detektion: Detektion): List<io.github.detekt.sarif4k.Result> =
-    detektion.findings.flatMap { (ruleSetId, findings) ->
-        findings.map { it.toResult(ruleSetId) }
-    }
+    detektion.findings.map { it.toResult() }
 
 internal fun Severity.toResultLevel() = when (this) {
     Severity.Error -> Level.Error
@@ -23,11 +20,11 @@ internal fun Severity.toResultLevel() = when (this) {
     Severity.Info -> Level.Note
 }
 
-private fun Finding2.toResult(ruleSetId: RuleSet.Id): io.github.detekt.sarif4k.Result {
+private fun Finding2.toResult(): io.github.detekt.sarif4k.Result {
     val code = entity.ktElement?.containingFile?.text
 
     return io.github.detekt.sarif4k.Result(
-        ruleID = "detekt.$ruleSetId.${rule.id}",
+        ruleID = "detekt.${rule.ruleSetId}.${rule.id}",
         level = severity.toResultLevel(),
         locations = (listOf(location) + references.map { it.location }).map { it.toLocation(code) }.distinct().toList(),
         message = Message(text = message)

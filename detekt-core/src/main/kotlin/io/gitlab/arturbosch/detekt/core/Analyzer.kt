@@ -24,7 +24,6 @@ import io.gitlab.arturbosch.detekt.core.config.AllRulesConfig
 import io.gitlab.arturbosch.detekt.core.config.DisabledAutoCorrectConfig
 import io.gitlab.arturbosch.detekt.core.config.validation.DeprecatedRule
 import io.gitlab.arturbosch.detekt.core.config.validation.loadDeprecations
-import io.gitlab.arturbosch.detekt.core.rules.associateRuleIdsToRuleSetIds
 import io.gitlab.arturbosch.detekt.core.suppressors.buildSuppressors
 import io.gitlab.arturbosch.detekt.core.tooling.getDefaultConfiguration
 import io.gitlab.arturbosch.detekt.core.util.isActiveOrDefault
@@ -34,8 +33,6 @@ import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.resolve.BindingContext
 import org.jetbrains.kotlin.resolve.calls.smartcasts.DataFlowValueFactoryImpl
 import kotlin.reflect.full.hasAnnotation
-
-private typealias FindingsResult = List<Map<RuleSet.Id, List<Finding2>>>
 
 internal class Analyzer(
     private val settings: ProcessingSettings,
@@ -48,7 +45,7 @@ internal class Analyzer(
     fun run(
         ktFiles: Collection<KtFile>,
         bindingContext: BindingContext = BindingContext.EMPTY
-    ): Map<RuleSet.Id, List<Finding2>> {
+    ): List<Finding2> {
         val languageVersionSettings = settings.environment.configuration.languageVersionSettings
 
         val dataFlowValueFactory = DataFlowValueFactoryImpl(languageVersionSettings)
@@ -56,29 +53,23 @@ internal class Analyzer(
         if (bindingContext == BindingContext.EMPTY) {
             warnAboutEnabledRequiresTypeResolutionRules()
         }
-        val findingsPerFile: FindingsResult = if (settings.spec.executionSpec.parallelAnalysis) {
+        return if (settings.spec.executionSpec.parallelAnalysis) {
             runAsync(ktFiles, bindingContext, compilerResources)
         } else {
             runSync(ktFiles, bindingContext, compilerResources)
         }
-
-        val findingsPerRuleSet = HashMap<RuleSet.Id, List<Finding2>>()
-        for (findings in findingsPerFile) {
-            findingsPerRuleSet.mergeSmells(findings)
-        }
-        return findingsPerRuleSet
     }
 
     private fun runSync(
         ktFiles: Collection<KtFile>,
         bindingContext: BindingContext,
         compilerResources: CompilerResources
-    ): FindingsResult =
-        ktFiles.map { file ->
+    ): List<Finding2> =
+        ktFiles.flatMap { file ->
             processors.forEach { it.onProcess(file, bindingContext) }
             val findings = runCatching { analyze(file, bindingContext, compilerResources) }
                 .onFailure { throwIllegalStateException(file, it) }
-                .getOrDefault(emptyMap())
+                .getOrDefault(emptyList())
             processors.forEach { it.onProcessComplete(file, findings, bindingContext) }
             findings
         }
@@ -87,34 +78,32 @@ internal class Analyzer(
         ktFiles: Collection<KtFile>,
         bindingContext: BindingContext,
         compilerResources: CompilerResources
-    ): FindingsResult {
+    ): List<Finding2> {
         val service = settings.taskPool
-        val tasks: TaskList<Map<RuleSet.Id, List<Finding2>>?> = ktFiles.map { file ->
-            service.task {
-                processors.forEach { it.onProcess(file, bindingContext) }
-                val findings = analyze(file, bindingContext, compilerResources)
-                processors.forEach { it.onProcessComplete(file, findings, bindingContext) }
-                findings
-            }.recover { throwIllegalStateException(file, it) }
+        val tasks: TaskList<List<Finding2>?> = ktFiles.map { file ->
+            service
+                .task {
+                    processors.forEach { it.onProcess(file, bindingContext) }
+                    val findings = analyze(file, bindingContext, compilerResources)
+                    processors.forEach { it.onProcessComplete(file, findings, bindingContext) }
+                    findings
+                }
+                .recover { throwIllegalStateException(file, it) }
         }
-        return awaitAll(tasks).filterNotNull()
+        return awaitAll(tasks).filterNotNull().flatten()
     }
 
     private fun analyze(
         file: KtFile,
         bindingContext: BindingContext,
         compilerResources: CompilerResources
-    ): Map<RuleSet.Id, List<Finding2>> {
+    ): List<Finding2> {
         val activeRuleSetsToRuleSetConfigs = providers.asSequence()
             .map { it to config.subConfig(it.ruleSetId.value) }
             .filter { (_, ruleSetConfig) -> ruleSetConfig.isActiveOrDefault(true) }
             .map { (provider, ruleSetConfig) -> provider.instance() to ruleSetConfig }
             .filter { (_, ruleSetConfig) -> ruleSetConfig.shouldAnalyzeFile(file) }
             .toList()
-
-        val ruleIdsToRuleSetIds = associateRuleIdsToRuleSetIds(
-            activeRuleSetsToRuleSetConfigs.map { (ruleSet, _) -> ruleSet }
-        )
 
         val (correctableRules, otherRules) = activeRuleSetsToRuleSetConfigs
             .flatMap { (ruleSet, ruleSetConfig) ->
@@ -131,26 +120,20 @@ internal class Analyzer(
             }
             .partition { (_, rule) -> rule.autoCorrect }
 
-        val result = HashMap<RuleSet.Id, MutableList<Finding2>>()
+        return buildList {
+            fun executeRules(rules: List<Pair<RuleSet.Id, Rule>>) {
+                for ((ruleSetId, rule) in rules) {
+                    val findings = rule.visitFile(file, bindingContext, compilerResources)
+                        .filterSuppressedFindings(rule, bindingContext)
+                        .map { it.toFinding2(rule.toRuleInfo(ruleSetId), rule.computeSeverity()) }
 
-        fun executeRules(rules: List<Pair<RuleSet.Id, Rule>>) {
-            for ((ruleSetId, rule) in rules) {
-                val findings = rule.visitFile(file, bindingContext, compilerResources)
-                    .filterSuppressedFindings(rule, bindingContext)
-                for (finding in findings) {
-                    val mappedRuleSet = checkNotNull(ruleIdsToRuleSetIds[rule.ruleId]) {
-                        "Mapping for '${rule.ruleId}' expected."
-                    }
-                    result.computeIfAbsent(mappedRuleSet) { mutableListOf() }
-                        .add(finding.toFinding2(rule.toRuleInfo(ruleSetId), rule.computeSeverity()))
+                    addAll(findings)
                 }
             }
+
+            executeRules(correctableRules)
+            executeRules(otherRules)
         }
-
-        executeRules(correctableRules)
-        executeRules(otherRules)
-
-        return result
     }
 
     private fun warnAboutEnabledRequiresTypeResolutionRules() {
@@ -178,12 +161,6 @@ private fun List<Finding>.filterSuppressedFindings(rule: Rule, bindingContext: B
         filter { finding -> !suppressors.any { suppressor -> suppressor.shouldSuppress(finding) } }
     } else {
         this
-    }
-}
-
-private fun MutableMap<RuleSet.Id, List<Finding2>>.mergeSmells(other: Map<RuleSet.Id, List<Finding2>>) {
-    for ((key, findings) in other.entries) {
-        merge(key, findings) { f1, f2 -> f1.plus(f2) }
     }
 }
 
