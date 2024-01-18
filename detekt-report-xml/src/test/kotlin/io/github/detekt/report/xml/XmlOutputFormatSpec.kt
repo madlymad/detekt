@@ -9,6 +9,7 @@ import io.gitlab.arturbosch.detekt.api.TextLocation
 import io.gitlab.arturbosch.detekt.test.TestDetektion
 import io.gitlab.arturbosch.detekt.test.createFinding
 import io.gitlab.arturbosch.detekt.test.createFindingForRelativePath
+import io.gitlab.arturbosch.detekt.test.createRuleInfo
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
@@ -117,12 +118,12 @@ class XmlOutputFormatSpec {
     @Test
     fun `renders issues with relative path`() {
         val findingA = createFindingForRelativePath(
-            ruleName = "id_a",
+            rule = createRuleInfo("id_a"),
             basePath = "/Users/tester/detekt/",
             relativePath = "Sample1.kt"
         )
         val findingB = createFindingForRelativePath(
-            ruleName = "id_b",
+            rule = createRuleInfo("id_b"),
             basePath = "/Users/tester/detekt/",
             relativePath = "Sample2.kt"
         )
