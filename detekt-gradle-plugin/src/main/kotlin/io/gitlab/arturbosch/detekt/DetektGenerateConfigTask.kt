@@ -57,7 +57,7 @@ abstract class DetektGenerateConfigTask @Inject constructor(
 
         Files.createDirectories(configFile.get().asFile.parentFile.toPath())
 
-        if (providers.gradleProperty(USE_WORKER_API).getOrElse("false") == "true") {
+        if (providers.gradleProperty(USE_WORKER_API).getOrElse("true").toBoolean()) {
             logger.info("Executing $name using Worker API")
             val workQueue = workerExecutor.processIsolation { workerSpec ->
                 workerSpec.classpath.from(detektClasspath)
